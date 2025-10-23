@@ -1,0 +1,22 @@
+# example workflow file for repositories using this action
+# copy this to .github/workflows/clickup-pr-link.yml in your repositories
+
+name: Add ClickUp Link to PR
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+jobs:
+  add-clickup-link:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Add ClickUp task link to PR
+        uses: YOUR_ORG/clickup-pr-link-action@v1
+        with:
+          clickup_api_key: ${{ secrets.CLICKUP_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
