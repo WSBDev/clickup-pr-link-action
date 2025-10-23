@@ -12,27 +12,7 @@ Automatically add ClickUp task links and titles to your pull request description
 
 ## Usage
 
-### 1. Set up ClickUp API Key
-
-#### Option A: Service Account (Recommended)
-1. Create a dedicated service account user in your ClickUp workspace
-2. Assign it read permissions for relevant spaces/folders
-3. Log in as that user and generate an API key at https://app.clickup.com/settings/apps
-
-#### Option B: Workspace API Key
-1. Go to your ClickUp workspace settings
-2. Navigate to **Integrations** → **API**
-3. Generate a new API key
-
-### 2. Add API Key as Organization Secret
-
-1. Go to your GitHub organization settings
-2. Navigate to **Secrets and variables** → **Actions**
-3. Create a new organization secret named `CLICKUP_API_KEY`
-4. Paste your ClickUp API key
-5. Configure repository access (all repositories or selected repositories)
-
-### 3. Add Workflow to Repositories
+### 1. Add Workflow to Repositories
 
 Create `.github/workflows/clickup-pr-link.yml` in each repository:
 
@@ -112,7 +92,7 @@ The workflow requires the following permissions:
 ### Failed to fetch task details
 - Verify the ClickUp API key has access to the workspace/space containing the task
 - Check that the task ID is valid and exists in ClickUp
-- Ensure the API key is correctly stored in GitHub secrets
+- Ensure the API key is correctly stored in GitHub secrets (this is currently Lex's PAT - check if she rotated it)
 
 ### PR description not updated
 - Verify the `GITHUB_TOKEN` has `pull-requests: write` permission
