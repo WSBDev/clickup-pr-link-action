@@ -12,7 +12,7 @@ Automatically add ClickUp task links and titles to your pull request description
 
 ## Usage
 
-### 1. Add Workflow to Repositories
+### Add Workflow to Repositories
 
 Create `.github/workflows/clickup-pr-link.yml` in each repository:
 
