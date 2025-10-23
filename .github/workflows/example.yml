@@ -5,7 +5,7 @@ name: Add ClickUp Link to PR
 
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, ready_for_review]
 
 jobs:
   add-clickup-link:
@@ -15,6 +15,9 @@ jobs:
       contents: read
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Add ClickUp task link to PR
         uses: WSBDev/clickup-pr-link-action@v1
         with:
