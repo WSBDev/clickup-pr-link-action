@@ -117,23 +117,20 @@ runs:
           exit 0
         fi
 
-        # create clickup section to prepend using cat heredoc
-        CLICKUP_SECTION=$(cat <<EOF
+        # create clickup section to prepend
+        cat > /tmp/pr_body.md <<'EOFBODY'
 ## 🎯 ClickUp Task
 
-**[$TASK_TITLE]($TASK_URL)**
+EOFBODY
+        echo "**[$TASK_TITLE]($TASK_URL)**" >> /tmp/pr_body.md
+        cat >> /tmp/pr_body.md <<'EOFBODY'
 
 ---
 
-EOF
-)
+EOFBODY
+        echo "$CURRENT_BODY" >> /tmp/pr_body.md
 
-        # prepend clickup section to existing body
-        NEW_BODY="${CLICKUP_SECTION}
-
-${CURRENT_BODY}"
-
-        # update pr description
-        gh pr edit "$PR_NUMBER" --body "$NEW_BODY"
+        # update pr description from file
+        gh pr edit "$PR_NUMBER" --body-file /tmp/pr_body.md
 
         echo "✓ Updated PR #$PR_NUMBER with ClickUp task link"
