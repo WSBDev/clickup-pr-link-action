@@ -118,17 +118,12 @@ runs:
         fi
 
         # create clickup section to prepend
-        cat > /tmp/pr_body.md <<'EOFBODY'
-## 🎯 ClickUp Task
-
-EOFBODY
-        echo "**[$TASK_TITLE]($TASK_URL)**" >> /tmp/pr_body.md
-        cat >> /tmp/pr_body.md <<'EOFBODY'
-
----
-
-EOFBODY
-        echo "$CURRENT_BODY" >> /tmp/pr_body.md
+        {
+          printf "## 🎯 ClickUp Task\n\n"
+          printf "**[%s](%s)**\n\n" "$TASK_TITLE" "$TASK_URL"
+          printf -- "---\n\n"
+          printf "%s" "$CURRENT_BODY"
+        } > /tmp/pr_body.md
 
         # update pr description from file
         gh pr edit "$PR_NUMBER" --body-file /tmp/pr_body.md
