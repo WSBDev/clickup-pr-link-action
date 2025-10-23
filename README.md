@@ -52,13 +52,11 @@ jobs:
 
     steps:
       - name: Add ClickUp task link to PR
-        uses: YOUR_ORG/clickup-pr-link-action@v1
+        uses: WSBDev/clickup-pr-link-action@v1
         with:
           clickup_api_key: ${{ secrets.CLICKUP_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
-
-**Replace `YOUR_ORG` with your GitHub organization name.**
 
 ## Branch Naming
 
