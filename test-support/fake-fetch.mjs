@@ -12,6 +12,7 @@
  * @typedef {object} CannedResponse
  * @property {number} status - http status to reply with
  * @property {unknown} body - reply body; strings are sent raw, anything else as json
+ * @property {Record<string, string>} [headers] - reply headers
  */
 
 /**
@@ -52,7 +53,7 @@ export function createFakeFetch(outcomes) {
     }
 
     const raw = typeof next.body === 'string' ? next.body : JSON.stringify(next.body);
-    return new Response(raw, { status: next.status });
+    return new Response(raw, { status: next.status, headers: next.headers });
   };
 
   return { fetchImpl, requests };

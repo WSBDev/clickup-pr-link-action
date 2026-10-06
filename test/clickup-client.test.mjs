@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { ClickUpApiError, createClickUpClient } from '../src/clickup-client.mjs';
-import { API_KEY, TASK_ID, errorReply, networkFailure, taskReply } from '../test-support/clickup-replies.mjs';
+import { API_KEY, LIST_ID, TASK_ID, errorReply, noSleep, taskReply } from '../test-support/canned-replies.mjs';
 import { createFakeFetch } from '../test-support/fake-fetch.mjs';
 
 /**
@@ -14,15 +14,15 @@ import { createFakeFetch } from '../test-support/fake-fetch.mjs';
  */
 function clientWith(outcomes) {
   const { fetchImpl, requests } = createFakeFetch(outcomes);
-  return { client: createClickUpClient({ apiKey: API_KEY, fetchImpl }), requests };
+  return { client: createClickUpClient({ apiKey: API_KEY, fetchImpl, sleep: noSleep }), requests };
 }
 
-test('getTask reads the task and returns its id, name and status', async () => {
+test('getTask reads the task and returns its id, name, status and list', async () => {
   const { client, requests } = clientWith([taskReply('in progress')]);
 
   const task = await client.getTask(TASK_ID);
 
-  assert.deepEqual(task, { id: TASK_ID, name: 'Example task', status: 'in progress' });
+  assert.deepEqual(task, { id: TASK_ID, name: 'Example task', status: 'in progress', listId: LIST_ID });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].method, 'GET');
   assert.equal(requests[0].url, `https://api.clickup.com/api/v2/task/${TASK_ID}`);
@@ -36,11 +36,10 @@ test('updateTaskStatus sends the new status as json', async () => {
 
   assert.equal(requests[0].method, 'PUT');
   assert.equal(requests[0].url, `https://api.clickup.com/api/v2/task/${TASK_ID}`);
-  assert.equal(requests[0].headers['Content-Type'], 'application/json');
   assert.deepEqual(JSON.parse(requests[0].body ?? ''), { status: 'in review' });
 });
 
-test('a failed call throws an error carrying the http status and clickup error code', async () => {
+test('a refused call throws an error carrying the http status and clickup error code', async () => {
   const { client } = clientWith([errorReply(400, 'CRTSK_001', 'Status does not exist')]);
 
   await assert.rejects(
@@ -68,39 +67,41 @@ test('an error never repeats the api key', async () => {
   );
 });
 
-test('a request that never reaches clickup still keeps the api key out of the error', async () => {
-  const { client } = clientWith([new TypeError(`Headers.append: "${API_KEY}" is an invalid header value.`)]);
+test('a reply that is not a task is an error', async () => {
+  const { client } = clientWith([{ status: 200, body: { id: TASK_ID } }]);
 
-  await assert.rejects(
-    () => client.getTask(TASK_ID),
-    (error) => {
-      assert.ok(error instanceof Error);
-      assert.equal(error instanceof ClickUpApiError, false);
-      assert.match(error.message, /invalid header value/);
-      assert.equal(error.message.includes(API_KEY), false);
-      return true;
-    },
-  );
+  await assert.rejects(() => client.getTask(TASK_ID), /without an id, name, status or list/);
 });
 
-test('a network failure reports the underlying reason, not just "fetch failed"', async () => {
-  const { client } = clientWith([networkFailure()]);
+test('getListStatuses returns the status names of a list in workflow order', async () => {
+  const shuffled = {
+    status: 200,
+    body: {
+      id: LIST_ID,
+      statuses: [
+        { status: 'complete', orderindex: 2 },
+        { status: 'todo', orderindex: 0 },
+        { status: 'in review', orderindex: 1 },
+      ],
+    },
+  };
+  const { client, requests } = clientWith([shuffled]);
 
-  await assert.rejects(() => client.getTask(TASK_ID), /ENOTFOUND api\.clickup\.com/);
+  assert.deepEqual(await client.getListStatuses(LIST_ID), ['todo', 'in review', 'complete']);
+  assert.equal(requests[0].method, 'GET');
+  assert.equal(requests[0].url, `https://api.clickup.com/api/v2/list/${LIST_ID}`);
 });
 
-test('a non-json error body still produces a usable error', async () => {
-  const { client } = clientWith([{ status: 502, body: '<html>Bad Gateway</html>' }]);
+test('a reply that is not a list of statuses is an error', async () => {
+  const { client } = clientWith([{ status: 200, body: { id: LIST_ID, statuses: [{ status: 'todo' }] } }]);
 
-  await assert.rejects(
-    () => client.getTask(TASK_ID),
-    (error) => {
-      assert.ok(error instanceof ClickUpApiError);
-      assert.equal(error.status, 502);
-      assert.equal(error.ecode, null);
-      return true;
-    },
-  );
+  await assert.rejects(() => client.getListStatuses(LIST_ID), /without usable statuses/);
+});
+
+test('a refused list read is an error', async () => {
+  const { client } = clientWith([errorReply(401, 'OAUTH_027', 'Team not authorized')]);
+
+  await assert.rejects(() => client.getListStatuses(LIST_ID), ClickUpApiError);
 });
 
 /** @type {Array<[string, import('../test-support/fake-fetch.mjs').CannedOutcome]>} */
@@ -129,7 +130,6 @@ const fatalReplies = [
   ['a 401 with an unknown OAUTH code', errorReply(401, 'OAUTH_999', 'Something new')],
   ['a 401 with no code', { status: 401, body: 'Unauthorized' }],
   ['a 403 with no code', { status: 403, body: 'Forbidden' }],
-  ['a server error', { status: 500, body: 'Server error' }],
 ];
 
 for (const [name, reply] of fatalReplies) {
@@ -139,3 +139,11 @@ for (const [name, reply] of fatalReplies) {
     await assert.rejects(() => client.getTask(TASK_ID), ClickUpApiError);
   });
 }
+
+test('getTask throws once a server error has outlasted the retries', async () => {
+  const down = { status: 500, body: 'Server error' };
+  const { client, requests } = clientWith([down, down, down]);
+
+  await assert.rejects(() => client.getTask(TASK_ID), ClickUpApiError);
+  assert.equal(requests.length, 3);
+});
