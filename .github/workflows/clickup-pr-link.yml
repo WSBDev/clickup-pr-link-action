@@ -15,9 +15,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # run the action from this checkout, so a pull request here exercises its own changes
+      # run the action from this checkout, so a pull request here exercises its own changes.
+      # strict here and nowhere else: the action turns every problem into a warning, so without
+      # this a broken release would pass its own check
       - name: Add ClickUp task link to PR
         uses: ./
         with:
           clickup_api_key: ${{ secrets.CLICKUP_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_problem: 'true'

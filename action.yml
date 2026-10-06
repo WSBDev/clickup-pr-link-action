@@ -26,6 +26,10 @@ inputs:
     description: 'Task status to set when a PR is merged. Empty string turns this off.'
     required: false
     default: 'complete'
+  fail_on_problem:
+    description: 'Set to "true" to fail the job when anything comes up short. Off by default, so the action never blocks a PR; problems then show as warnings.'
+    required: false
+    default: 'false'
 
 outputs:
   clickup_id:
@@ -38,8 +42,10 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    # neither step may fail the job: keeping a ticket in step is bookkeeping, and this check is a
-    # required one in some repositories. every problem is raised as a "::warning::" annotation.
+    # unless fail_on_problem is "true", neither step may fail the job: keeping a ticket in step is
+    # bookkeeping, and this check is a required one in some repositories. every problem is raised
+    # as a "::warning::" annotation, and each step is guarded as a whole, so a missing node or a
+    # full disk cannot turn the check red either.
 
     # find the clickup task for this pr from its title and branch name, publish it for the link
     # step below, and bring its status in line with the pr. every value reaches the script through
@@ -63,11 +69,21 @@ runs:
         # dependabot; there an empty api key is expected and is not worth a warning.
         # head.repo.fork is not used: it is also true for same-repo prs in a repo that is a fork.
         SECRETS_WITHHELD: ${{ github.event.pull_request.head.repo.full_name != github.repository || github.actor == 'dependabot[bot]' }}
-      run: node "$GITHUB_ACTION_PATH/src/main.mjs"
+        FAIL_ON_PROBLEM: ${{ inputs.fail_on_problem }}
+      run: |
+        node "$GITHUB_ACTION_PATH/src/main.mjs" && exit 0
+
+        # the script did not finish cleanly: strict mode asked for a failure, or node is missing
+        # from this runner or too old to run it
+        if [ "$FAIL_ON_PROBLEM" = "true" ]; then
+          exit 1
+        fi
+        echo "::warning::The ClickUp action could not run on this runner (it needs Node 20 or newer on PATH). Nothing was changed."
 
     # add the task link to the pr description, whenever the step above found the task.
     - name: Update PR description
-      if: ${{ !cancelled() && steps.sync.outputs.task_title != '' }}
+      if: steps.sync.outputs.task_title != ''
+      continue-on-error: ${{ inputs.fail_on_problem != 'true' }}
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}

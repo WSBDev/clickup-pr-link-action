@@ -78,21 +78,17 @@ function publishTask(io, task) {
 }
 
 /**
- * works out which status the event that started the run asks for, from the event alone.
+ * works out which status a status event asks for, from the event alone.
  *
  * @param {Record<string, string | undefined>} env - reads EVENT_ACTION, PR_MERGED and PR_DRAFT
  * @param {import('./status-target.mjs').StatusNames} statuses - status names configured for this workflow
- * @returns {string | null} the status the event asks for; null for an event that changes nothing
+ * @returns {string | null} the status the event asks for; null when it asks for none
  * @remarks this is the event's own account, frozen when it fired. it is good enough to honour a
- * merge, but not to put a task in review.
+ * merge, but not to put a task in review. the caller has already checked it is a status event.
  */
 function statusFromEvent(env, statuses) {
-  const action = env.EVENT_ACTION ?? '';
-  if (!isStatusEvent(action)) {
-    return null;
-  }
   return statusForPullRequest(
-    { open: action !== 'closed', merged: env.PR_MERGED === 'true', draft: env.PR_DRAFT === 'true' },
+    { open: env.EVENT_ACTION !== 'closed', merged: env.PR_MERGED === 'true', draft: env.PR_DRAFT === 'true' },
     statuses,
   );
 }
@@ -133,10 +129,10 @@ async function readLivePullRequest(io) {
  */
 async function decideStatus(io, statuses) {
   const { env } = io;
-  const eventStatus = statusFromEvent(env, statuses);
   if (!isStatusEvent(env.EVENT_ACTION ?? '')) {
     return { targetStatus: null, problem: null };
   }
+  const eventStatus = statusFromEvent(env, statuses);
   if (env.PR_MERGED === 'true') {
     return { targetStatus: eventStatus, problem: null };
   }
@@ -239,24 +235,40 @@ async function syncPullRequest(io) {
 }
 
 /**
- * runs the action's one command and never fails the check.
+ * runs the action's one command without ever throwing.
  *
  * @param {CommandIo} io - reads BRANCH_NAME, PR_TITLE, CLICKUP_API_KEY, SECRETS_WITHHELD,
  * REVIEW_STATUS and MERGED_STATUS, plus what decideStatus reads; writes the outputs clickup_id,
  * task_url and task_title
- * @returns {Promise<void>} always resolves
+ * @returns {Promise<boolean>} true when something came up short and a warning was raised
  * @remarks keeping a ticket in step is bookkeeping, and bookkeeping must never stand between a pull
  * request and its merge: this check is a required one in some repositories. so every problem, a
  * dead api key, an outage, a refused status change, even a fault in the action itself, is raised
- * as a warning annotation on the run and the step still succeeds.
+ * as a warning annotation and reported through the return value. whether that fails anything is
+ * the caller's decision.
  * @example
- * await runSync({ env: process.env, fetchImpl: fetch, setOutput, log: console.log });
+ * const hadProblem = await runSync({ env: process.env, fetchImpl: fetch, setOutput, log: console.log });
  */
 export async function runSync(io) {
+  let hadProblem = false;
+
+  /**
+   * passes a log line on, noting whether it is a warning.
+   *
+   * @param {string} line - line about to be printed
+   * @returns {void}
+   */
+  function log(line) {
+    hadProblem ||= line.startsWith('::warning::');
+    io.log(line);
+  }
+  const watched = { ...io, log };
+
   try {
-    await syncPullRequest(io);
+    await syncPullRequest(watched);
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'unknown error';
-    emit(io, 'warning', `The ClickUp action hit an unexpected fault and did nothing further: ${reason}`);
+    emit(watched, 'warning', `The ClickUp action hit an unexpected fault and did nothing further: ${reason}`);
   }
+  return hadProblem;
 }

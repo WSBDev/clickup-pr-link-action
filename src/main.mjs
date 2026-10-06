@@ -21,4 +21,10 @@ function setOutput(name, value) {
   }
 }
 
-await runSync({ env: process.env, fetchImpl: fetch, setOutput, log: console.log });
+const hadProblem = await runSync({ env: process.env, fetchImpl: fetch, setOutput, log: console.log });
+
+// strict mode exists for this action's own self-test: with every problem downgraded to a warning,
+// a broken release would otherwise pass its own check and reach every repository unnoticed
+if (hadProblem && process.env.FAIL_ON_PROBLEM === 'true') {
+  process.exitCode = 1;
+}
