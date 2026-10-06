@@ -62,18 +62,18 @@ gh repo create YOUR_ORG/clickup-pr-link-action --public --source=. --remote=orig
 1. Navigate to the repository on GitHub
 2. Click **Releases** → **Create a new release**
 3. Configure the release:
-   - **Tag:** `v1.0.0`
-   - **Release title:** `v1.0.0 - Initial Release`
+   - **Tag:** `v2.0.0`
+   - **Release title:** `v2.0.0`
    - **Description:** "Initial release of ClickUp PR Link action"
 4. Click **Publish release**
 
-5. Create the `v1` tag to point to this release:
+5. Create the `v2` tag to point to this release:
    ```bash
-   git tag v1 v1.0.0
-   git push origin v1
+   git tag v2 v2.0.0
+   git push origin v2
    ```
 
-This allows repositories to use `@v1` and automatically get patch updates.
+This allows repositories to use `@v2` and automatically get patch updates.
 
 ## Phase 3: Deploy to Repositories
 
@@ -91,10 +91,6 @@ on:
   pull_request:
     types: [opened, reopened, ready_for_review, synchronize, closed]
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
   add-clickup-link:
     runs-on: ubuntu-latest
@@ -103,11 +99,8 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Add ClickUp task link to PR
-        uses: YOUR_ORG/clickup-pr-link-action@v1
+        uses: YOUR_ORG/clickup-pr-link-action@v2
         with:
           clickup_api_key: ${{ secrets.CLICKUP_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -136,7 +129,7 @@ while read repo; do
 
   # create workflow directory and file
   mkdir -p .github/workflows
-  cp ../clickup-pr-link-action/.github/workflows/example.yml .github/workflows/clickup-pr-link.yml
+  cp ../clickup-pr-link-action/examples/clickup-pr-link.yml .github/workflows/clickup-pr-link.yml
 
   # update YOUR_ORG placeholder
   sed -i 's/YOUR_ORG/YOUR_ACTUAL_ORG_NAME/g' .github/workflows/clickup-pr-link.yml
@@ -180,10 +173,6 @@ on:
   pull_request:
     types: [opened, reopened, ready_for_review, synchronize, closed]
 
-concurrency:
-  group: \${{ github.workflow }}-\${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
   add-clickup-link:
     runs-on: ubuntu-latest
@@ -192,11 +181,8 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Add ClickUp task link to PR
-        uses: $ORG/clickup-pr-link-action@v1
+        uses: $ORG/clickup-pr-link-action@v2
         with:
           clickup_api_key: \${{ secrets.CLICKUP_API_KEY }}
           github_token: \${{ secrets.GITHUB_TOKEN }}
@@ -238,7 +224,7 @@ chmod +x deploy-to-all-repos.sh
 ### Expected Behavior
 
 When the action runs successfully:
-- ✓ Extracts ClickUp ID from branch name, pull request title or description
+- ✓ Finds the ClickUp ID in the pull request title or branch name
 - ✓ Fetches task details from ClickUp API
 - ✓ Prepends task title and link to PR description
 - ✓ Moves the task to **in review** when the pull request opens (drafts wait until marked ready)
@@ -264,14 +250,14 @@ When making improvements:
 
 1. Make the change with its tests and confirm `npm test` passes
 2. Commit and push changes
-3. Create a new release (e.g., `v1.1.0`)
-4. Update the `v1` tag:
+3. Create a new release (e.g., `v2.1.0`)
+4. Update the `v2` tag:
    ```bash
-   git tag -f v1 v1.1.0
-   git push origin v1 --force
+   git tag -f v2 v2.1.0
+   git push origin v2 --force
    ```
 
-All repositories using `@v1` will automatically use the updated version.
+All repositories using `@v2` will automatically use the updated version.
 
 ### Monitoring
 

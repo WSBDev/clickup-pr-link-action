@@ -4,12 +4,6 @@ on:
   pull_request:
     types: [opened, reopened, ready_for_review, synchronize, closed]
 
-# one run at a time per pull request, in event order: without this a slow "opened" run could
-# finish after the "closed" run and put a merged task back in review
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
   add-clickup-link:
     runs-on: ubuntu-latest

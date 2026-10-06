@@ -8,12 +8,6 @@ on:
     # "closed" is what lets a merged pr move its task to the merged status
     types: [opened, reopened, ready_for_review, synchronize, closed]
 
-# one run at a time per pull request, in event order: without this a slow "opened" run could
-# finish after the "closed" run and put a merged task back in review
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
   add-clickup-link:
     runs-on: ubuntu-latest
@@ -22,11 +16,8 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Add ClickUp task link to PR
-        uses: WSBDev/clickup-pr-link-action@v1
+        uses: WSBDev/clickup-pr-link-action@v2
         with:
           clickup_api_key: ${{ secrets.CLICKUP_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
