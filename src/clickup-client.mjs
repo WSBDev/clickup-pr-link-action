@@ -1,7 +1,7 @@
 // @ts-check
+import { isRecord, redact, requestJson } from './http.mjs';
 
 const BASE_URL = 'https://api.clickup.com/api/v2';
-const TIMEOUT_MS = 10_000;
 
 /**
  * clickup error codes for "this key is not authorized for the workspace that owns the task":
@@ -14,12 +14,15 @@ const TEAM_NOT_AUTHORIZED = /^OAUTH_0(?:23|26|27|29|3\d|4[0-5])$/;
  * @property {string} id - task id
  * @property {string} name - task title
  * @property {string} status - current status name, as clickup spells it
+ * @property {string} listId - id of the list the task lives in; the list defines the statuses
  */
 
 /**
  * @typedef {object} ClickUpClient
  * @property {(taskId: string) => Promise<ClickUpTask | null>} getTask - reads one task; null when
  * the task does not exist or the key cannot see it
+ * @property {(listId: string) => Promise<string[]>} getListStatuses - reads a list's status names,
+ * first to last in workflow order
  * @property {(taskId: string, status: string) => Promise<void>} updateTaskStatus - sets a task's status
  */
 
@@ -63,62 +66,73 @@ function isTaskUnavailable(error) {
 }
 
 /**
- * narrows an unknown value to a plain object.
- *
- * @param {unknown} value - value to test
- * @returns {value is Record<string, unknown>} true for non-null objects
- */
-function isRecord(value) {
-  return typeof value === 'object' && value !== null;
-}
-
-/**
- * parses a reply body that should be json but may not be.
- *
- * @param {string} text - raw reply body
- * @returns {unknown} the parsed value, or null when the body is not json
- */
-function parseJson(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-/**
  * validates the task fields this action relies on.
  *
  * @param {unknown} data - parsed reply of the get-task call
  * @returns {ClickUpTask} the validated task
- * @throws {Error} when the reply lacks an id, a name or a status name
+ * @throws {Error} when the reply lacks an id, a name, a status name or a list id
  */
 function readTask(data) {
   if (
     !isRecord(data) ||
     !isRecord(data.status) ||
+    !isRecord(data.list) ||
     typeof data.id !== 'string' ||
     typeof data.name !== 'string' ||
-    typeof data.status.status !== 'string'
+    typeof data.status.status !== 'string' ||
+    typeof data.list.id !== 'string'
   ) {
-    throw new Error('ClickUp returned a task without an id, name or status');
+    throw new Error('ClickUp returned a task without an id, name, status or list');
   }
-  return { id: data.id, name: data.name, status: data.status.status };
+  return { id: data.id, name: data.name, status: data.status.status, listId: data.list.id };
 }
 
 /**
- * says why a request got no answer.
+ * reads the status names of a list reply, in workflow order.
  *
- * @param {unknown} error - what fetch threw
- * @returns {string} the error text, followed by the underlying cause when there is one
- * @remarks node reports every network failure as "fetch failed" and puts the real reason
- * (dns, reset, tls) in the error's cause.
+ * @param {unknown} data - parsed reply of the get-list call
+ * @returns {string[]} status names, first to last
+ * @throws {Error} when the reply has no statuses, or one lacks a name or a position
+ * @remarks clickup gives each status an "orderindex"; the reply is not guaranteed to be sorted by it.
  */
-function describeTransportError(error) {
-  if (!(error instanceof Error)) {
-    return 'unknown error';
+function readListStatuses(data) {
+  const entries = isRecord(data) && Array.isArray(data.statuses) ? data.statuses : [];
+  const positioned = [];
+
+  for (const entry of entries) {
+    const position = isRecord(entry) ? Number(entry.orderindex) : Number.NaN;
+    if (!isRecord(entry) || typeof entry.status !== 'string' || entry.orderindex === null || !Number.isFinite(position)) {
+      throw new Error('ClickUp returned a list without usable statuses');
+    }
+    positioned.push({ name: entry.status, position });
   }
-  return error.cause instanceof Error ? `${error.message}: ${error.cause.message}` : error.message;
+  if (positioned.length === 0) {
+    throw new Error('ClickUp returned a list without usable statuses');
+  }
+
+  positioned.sort(byPosition);
+  return positioned.map(nameOf);
+}
+
+/**
+ * orders two statuses by their position in the list's workflow.
+ *
+ * @param {{position: number}} left - one status
+ * @param {{position: number}} right - the other status
+ * @returns {number} negative when left comes first, positive when right does
+ */
+function byPosition(left, right) {
+  return left.position - right.position;
+}
+
+/**
+ * picks the name out of a positioned status.
+ *
+ * @param {{name: string}} status - a status with its name
+ * @returns {string} the status name
+ */
+function nameOf(status) {
+  return status.name;
 }
 
 /**
@@ -127,6 +141,7 @@ function describeTransportError(error) {
  * @param {object} options - client settings
  * @param {string} options.apiKey - clickup personal api token, sent as the Authorization header
  * @param {typeof fetch} [options.fetchImpl] - fetch implementation; tests pass a stand-in
+ * @param {import('./http.mjs').Sleep} [options.sleep] - waits between retries; tests pass a stand-in
  * @returns {ClickUpClient} the client
  * @remarks every failure message has the api key stripped out, so messages are safe to print in
  * a workflow log.
@@ -134,17 +149,7 @@ function describeTransportError(error) {
  * const client = createClickUpClient({ apiKey: process.env.CLICKUP_API_KEY ?? '' });
  * const task = await client.getTask('abc12345x');
  */
-export function createClickUpClient({ apiKey, fetchImpl = fetch }) {
-  /**
-   * strips the api key out of text that may end up in a log.
-   *
-   * @param {string} text - message to clean
-   * @returns {string} the message with every copy of the api key replaced
-   */
-  function redact(text) {
-    return apiKey ? text.replaceAll(apiKey, '[redacted]') : text;
-  }
-
+export function createClickUpClient({ apiKey, fetchImpl = fetch, sleep }) {
   /**
    * sends one api request and returns the parsed reply.
    *
@@ -153,36 +158,31 @@ export function createClickUpClient({ apiKey, fetchImpl = fetch }) {
    * @param {Record<string, unknown>} [payload] - json body, for writes
    * @returns {Promise<unknown>} the parsed reply body
    * @throws {ClickUpApiError} when clickup answers with a non-2xx status
-   * @throws {Error} when no complete answer arrives: bad header value, network failure, timeout
-   * @remarks node quotes a malformed header value in its own error text, so a transport error is
-   * rethrown with the key stripped and without the original error attached.
+   * @throws {Error} when no answer arrives
    */
   async function request(method, path, payload) {
-    let response;
-    let text;
-    try {
-      response = await fetchImpl(`${BASE_URL}${path}`, {
-        method,
-        headers: { Authorization: apiKey, 'Content-Type': 'application/json' },
-        body: payload === undefined ? undefined : JSON.stringify(payload),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-      text = await response.text();
-    } catch (error) {
-      throw new Error(redact(`ClickUp request got no answer: ${describeTransportError(error)}`));
-    }
-    const data = parseJson(text);
+    const reply = await requestJson({
+      fetchImpl,
+      url: `${BASE_URL}${path}`,
+      method,
+      headers: { Authorization: apiKey },
+      payload,
+      secret: apiKey,
+      service: 'ClickUp',
+      sleep,
+    });
 
-    if (!response.ok) {
+    if (!reply.ok) {
+      const { data } = reply;
       const ecode = isRecord(data) && typeof data.ECODE === 'string' ? data.ECODE : null;
       const detail = isRecord(data) && typeof data.err === 'string' ? data.err : 'no error detail in the reply';
       throw new ClickUpApiError(
-        response.status,
+        reply.status,
         ecode,
-        redact(`ClickUp answered HTTP ${response.status}${ecode ? ` (${ecode})` : ''}: ${detail}`),
+        redact(`ClickUp answered HTTP ${reply.status}${ecode ? ` (${ecode})` : ''}: ${detail}`, apiKey),
       );
     }
-    return data;
+    return reply.data;
   }
 
   /**
@@ -205,6 +205,18 @@ export function createClickUpClient({ apiKey, fetchImpl = fetch }) {
   }
 
   /**
+   * reads the status names of one list.
+   *
+   * @param {string} listId - clickup list id
+   * @returns {Promise<string[]>} status names, first to last in workflow order
+   * @throws {ClickUpApiError} when clickup refuses the call
+   * @throws {Error} when no answer arrives or the reply has no usable statuses
+   */
+  async function getListStatuses(listId) {
+    return readListStatuses(await request('GET', `/list/${encodeURIComponent(listId)}`));
+  }
+
+  /**
    * sets the status of one task.
    *
    * @param {string} taskId - clickup task id
@@ -217,5 +229,5 @@ export function createClickUpClient({ apiKey, fetchImpl = fetch }) {
     await request('PUT', `/task/${encodeURIComponent(taskId)}`, { status });
   }
 
-  return { getTask, updateTaskStatus };
+  return { getTask, getListStatuses, updateTaskStatus };
 }
