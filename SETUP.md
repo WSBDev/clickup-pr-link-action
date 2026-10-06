@@ -12,7 +12,7 @@ Complete step-by-step guide to deploy this action across your GitHub organizatio
 
 2. Assign appropriate permissions:
    - Add to relevant spaces/folders
-   - Grant **View** and **Read** permissions (minimum required)
+   - Grant **Edit** permission: the action changes task statuses, so read access is not enough
 
 3. Log in as the service account user
 
@@ -89,7 +89,11 @@ name: Add ClickUp Link to PR
 
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, ready_for_review, synchronize, closed]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   add-clickup-link:
@@ -99,6 +103,9 @@ jobs:
       contents: read
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Add ClickUp task link to PR
         uses: YOUR_ORG/clickup-pr-link-action@v1
         with:
@@ -171,7 +178,11 @@ name: Add ClickUp Link to PR
 
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, ready_for_review, synchronize, closed]
+
+concurrency:
+  group: \${{ github.workflow }}-\${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   add-clickup-link:
@@ -181,6 +192,9 @@ jobs:
       contents: read
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Add ClickUp task link to PR
         uses: $ORG/clickup-pr-link-action@v1
         with:
@@ -218,13 +232,17 @@ chmod +x deploy-to-all-repos.sh
 3. Make a change and push
 4. Create a pull request
 5. Verify the PR description includes the ClickUp link
+6. Verify the ClickUp task moved to **in review**
+7. Merge the pull request and verify the task moved to **complete**
 
 ### Expected Behavior
 
 When the action runs successfully:
-- ✓ Extracts ClickUp ID from branch name
+- ✓ Extracts ClickUp ID from branch name, pull request title or description
 - ✓ Fetches task details from ClickUp API
 - ✓ Prepends task title and link to PR description
+- ✓ Moves the task to **in review** when the pull request opens (drafts wait until marked ready)
+- ✓ Moves the task to **complete** when the pull request merges
 
 ### Troubleshooting
 
@@ -233,6 +251,10 @@ If the action fails, check:
 2. ClickUp API key is correctly stored in organization secrets
 3. Service account has access to the ClickUp task
 4. Branch name contains a valid ClickUp task ID
+5. The workflow's `pull_request` types include `closed`; without it a merge never runs the workflow
+6. The task's list has statuses named **in review** and **complete**, or the workflow sets `review_status` and `merged_status` to the names that list uses
+
+A red check with `Token invalid` in the log means the API key was revoked or regenerated. Replace the `CLICKUP_API_KEY` organization secret.
 
 ## Phase 5: Maintenance
 
@@ -240,7 +262,7 @@ If the action fails, check:
 
 When making improvements:
 
-1. Make changes to `action.yml`
+1. Make the change with its tests and confirm `npm test` passes
 2. Commit and push changes
 3. Create a new release (e.g., `v1.1.0`)
 4. Update the `v1` tag:
