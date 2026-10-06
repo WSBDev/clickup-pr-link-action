@@ -232,15 +232,15 @@ When the action runs successfully:
 
 ### Troubleshooting
 
-If the action fails, check:
-1. GitHub Actions logs for error messages
+The check stays green even when something went wrong, so start from the symptom. If a ticket did not move or the link is missing, check:
+1. The workflow run for warnings (the yellow annotations on the run page)
 2. ClickUp API key is correctly stored in organization secrets
 3. Service account has access to the ClickUp task
 4. Branch name contains a valid ClickUp task ID
 5. The workflow's `pull_request` types include `closed`; without it a merge never runs the workflow
 6. The task's list has statuses named **in review** and **complete**, or the workflow sets `review_status` and `merged_status` to the names that list uses
 
-A red check with `Token invalid` in the log means the API key was revoked or regenerated. Replace the `CLICKUP_API_KEY` organization secret.
+A warning with `Token invalid` means the API key was revoked or regenerated. Replace the `CLICKUP_API_KEY` organization secret.
 
 ## Phase 5: Maintenance
 
@@ -263,7 +263,7 @@ All repositories using `@v2` will automatically use the updated version.
 
 Monitor action usage across your organization:
 - GitHub Insights → Actions
-- Check for failed workflows
+- Check workflow runs for warnings; the action reports problems as warnings and does not fail
 - Review action logs for common issues
 
 ## Security Considerations

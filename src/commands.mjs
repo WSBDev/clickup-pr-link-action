@@ -24,17 +24,18 @@ import { listTaskIdCandidates, taskUrl } from './task-id.mjs';
  */
 
 /**
- * prints one line to the workflow log, as a plain line or as an annotation.
+ * prints one line to the workflow log, as a plain line or as a warning annotation.
  *
  * @param {CommandIo} io - command io bundle
- * @param {'info' | 'warning' | 'error'} level - info prints plainly; the others raise an annotation
+ * @param {'info' | 'warning'} level - info prints plainly; warning raises an annotation on the run
  * @param {string} message - text to print
  * @returns {void}
- * @remarks text that came from an api must not be able to issue a workflow command of its own. the
- * runner reads "::name::" at the start of a line and the older "##[name]" anywhere in one, so the
- * latter is broken up and line breaks never survive. an annotation is percent-encoded the way the
- * actions toolkit does, which the runner decodes again; a plain line is not decoded, so there line
- * breaks are flattened instead.
+ * @remarks there is deliberately no error level: nothing this action meets may fail the check.
+ * text that came from an api must not be able to issue a workflow command of its own. the runner
+ * reads "::name::" at the start of a line and the older "##[name]" anywhere in one, so the latter
+ * is broken up and line breaks never survive. an annotation is percent-encoded the way the actions
+ * toolkit does, which the runner decodes again; a plain line is not decoded, so there line breaks
+ * are flattened instead.
  */
 function emit(io, level, message) {
   const safe = message.replaceAll('##[', '# #[');
@@ -43,20 +44,7 @@ function emit(io, level, message) {
     return;
   }
   const escaped = safe.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
-  io.log(`::${level}::${escaped}`);
-}
-
-/**
- * reports a problem at the weight the run calls for.
- *
- * @param {CommandIo} io - command io bundle
- * @param {boolean} isFatal - true when the run owes a status change it now cannot make
- * @param {string} message - what went wrong
- * @returns {number} the exit code: 1 with an error when fatal, 0 with a warning otherwise
- */
-function reportProblem(io, isFatal, message) {
-  emit(io, isFatal ? 'error' : 'warning', message);
-  return isFatal ? 1 : 0;
+  io.log(`::warning::${escaped}`);
 }
 
 /**
@@ -90,21 +78,17 @@ function publishTask(io, task) {
 }
 
 /**
- * works out which status the event that started the run asks for, from the event alone.
+ * works out which status a status event asks for, from the event alone.
  *
  * @param {Record<string, string | undefined>} env - reads EVENT_ACTION, PR_MERGED and PR_DRAFT
  * @param {import('./status-target.mjs').StatusNames} statuses - status names configured for this workflow
- * @returns {string | null} the status the event asks for; null for an event that changes nothing
- * @remarks this is the event's own account, frozen when it fired. it is good enough to weigh a
- * problem (error or warning) and to honour a merge, but not to put a task in review.
+ * @returns {string | null} the status the event asks for; null when it asks for none
+ * @remarks this is the event's own account, frozen when it fired. it is good enough to honour a
+ * merge, but not to put a task in review. the caller has already checked it is a status event.
  */
 function statusFromEvent(env, statuses) {
-  const action = env.EVENT_ACTION ?? '';
-  if (!isStatusEvent(action)) {
-    return null;
-  }
   return statusForPullRequest(
-    { open: action !== 'closed', merged: env.PR_MERGED === 'true', draft: env.PR_DRAFT === 'true' },
+    { open: env.EVENT_ACTION !== 'closed', merged: env.PR_MERGED === 'true', draft: env.PR_DRAFT === 'true' },
     statuses,
   );
 }
@@ -136,7 +120,6 @@ async function readLivePullRequest(io) {
  * decides what the run owes the task.
  *
  * @param {CommandIo} io - reads EVENT_ACTION and PR_MERGED, plus what readLivePullRequest reads
- * @param {string | null} eventStatus - the status the event asks for, by the event's own account
  * @param {import('./status-target.mjs').StatusNames} statuses - status names configured for this workflow
  * @returns {Promise<StatusDecision>} the status to set, nothing, or a problem
  * @remarks a merge event is taken at its word, because a merge cannot be undone. any other event
@@ -144,11 +127,12 @@ async function readLivePullRequest(io) {
  * re-run by hand days later, so for those the state is read live from github. when it cannot be
  * read, an event that says "open" is not acted on unconfirmed.
  */
-async function decideStatus(io, eventStatus, statuses) {
+async function decideStatus(io, statuses) {
   const { env } = io;
   if (!isStatusEvent(env.EVENT_ACTION ?? '')) {
     return { targetStatus: null, problem: null };
   }
+  const eventStatus = statusFromEvent(env, statuses);
   if (env.PR_MERGED === 'true') {
     return { targetStatus: eventStatus, problem: null };
   }
@@ -162,7 +146,7 @@ async function decideStatus(io, eventStatus, statuses) {
     const reason = error instanceof Error ? error.message : 'unknown error';
     return {
       targetStatus: null,
-      problem: `Could not confirm with GitHub that the pull request is still open (${reason}). Task status not changed. Re-run this job.`,
+      problem: `Could not confirm with GitHub that the pull request is still open (${reason}). Task status not changed. Re-run this job to try again.`,
     };
   }
 }
@@ -171,41 +155,31 @@ async function decideStatus(io, eventStatus, statuses) {
  * finds the pull request's clickup task, publishes it for the link step, and brings its status in
  * line with the pull request.
  *
- * @param {CommandIo} io - reads BRANCH_NAME, PR_TITLE, CLICKUP_API_KEY, SECRETS_WITHHELD,
- * REVIEW_STATUS and MERGED_STATUS, plus what statusFromEvent and decideStatus read; writes the
- * outputs clickup_id, task_url and task_title
- * @returns {Promise<number>} 0 when the task is in step or nothing was owed; 1 when a status change
- * was owed and could not be made, so the check on the pull request goes red instead of failing silently
- * @remarks a problem finding the task is an error only on a run whose event asks for a status
- * change; on a push, a draft or a pull request closed without merging it is a warning. a missing
- * api key is not a problem at all on runs github denies secrets to by design (SECRETS_WITHHELD is
- * "true"). the pull request is read from github only once a task is found, and right before the
- * write.
- * @example
- * process.exitCode = await runSync({ env: process.env, fetchImpl: fetch, setOutput, log: console.log });
+ * @param {CommandIo} io - see runSync
+ * @returns {Promise<void>}
+ * @throws {Error} only on a fault of the action itself; every api problem is reported and absorbed
+ * @remarks the pull request is read from github only once a task is found, and right before the write.
  */
-export async function runSync(io) {
+async function syncPullRequest(io) {
   const { env } = io;
   publishTask(io, null);
 
   const candidates = listTaskIdCandidates({ branch: env.BRANCH_NAME, title: env.PR_TITLE });
   if (candidates.length === 0) {
     emit(io, 'info', 'No ClickUp task ID in the title or branch name');
-    return 0;
+    return;
   }
   const named = candidates.join(', ');
-  const statuses = { review: env.REVIEW_STATUS ?? '', merged: env.MERGED_STATUS ?? '' };
-  const eventStatus = statusFromEvent(env, statuses);
-  const eventOwesChange = eventStatus !== null;
 
   // a secret pasted with a stray space or newline is the same key; as a header value it would be refused
   const apiKey = (env.CLICKUP_API_KEY ?? '').trim();
   if (apiKey === '') {
     if (env.SECRETS_WITHHELD === 'true') {
       emit(io, 'info', `ClickUp task not looked up (${named}): pull requests from other repositories and from Dependabot are not given secrets`);
-      return 0;
+      return;
     }
-    return reportProblem(io, eventOwesChange, `Cannot look up the ClickUp task (${named}): clickup_api_key is empty. Set the CLICKUP_API_KEY secret and pass it to the action.`);
+    emit(io, 'warning', `Cannot look up the ClickUp task (${named}): clickup_api_key is empty. Set the CLICKUP_API_KEY secret and pass it to the action.`);
+    return;
   }
 
   const clickup = createClickUpClient({ apiKey, fetchImpl: io.fetchImpl, sleep: io.sleep });
@@ -214,30 +188,32 @@ export async function runSync(io) {
   try {
     task = await resolveTask(candidates, clickup);
   } catch (error) {
-    return reportProblem(io, eventOwesChange, `Could not look up the ClickUp task (${named}): ${describeFailure(error)}`);
+    emit(io, 'warning', `Could not look up the ClickUp task (${named}), so no link was added and no status changed: ${describeFailure(error)}`);
+    return;
   }
   if (task === null) {
     emit(io, 'warning', `None of these is a ClickUp task the API key can see: ${named}. Nothing was changed.`);
-    return 0;
+    return;
   }
   publishTask(io, task);
 
-  const decision = await decideStatus(io, eventStatus, statuses);
+  const statuses = { review: env.REVIEW_STATUS ?? '', merged: env.MERGED_STATUS ?? '' };
+  const decision = await decideStatus(io, statuses);
   if (decision.problem !== null) {
-    emit(io, 'error', decision.problem);
-    return 1;
+    emit(io, 'warning', decision.problem);
+    return;
   }
   if (decision.targetStatus === null) {
     emit(io, 'info', `ClickUp task ${task.id} left as "${task.status}": this event, or the pull request's state, calls for no status change`);
-    return 0;
+    return;
   }
 
   let result;
   try {
     result = await syncTaskStatus({ task, targetStatus: decision.targetStatus, client: clickup });
   } catch (error) {
-    emit(io, 'error', `Could not move ClickUp task ${task.id} to "${decision.targetStatus}": ${describeFailure(error)}`);
-    return 1;
+    emit(io, 'warning', `ClickUp task ${task.id} is linked, but its status could not be changed to "${decision.targetStatus}": ${describeFailure(error)}`);
+    return;
   }
 
   switch (result.outcome) {
@@ -256,5 +232,43 @@ export async function runSync(io) {
       throw new Error(`unhandled sync outcome: ${unhandled}`);
     }
   }
-  return 0;
+}
+
+/**
+ * runs the action's one command without ever throwing.
+ *
+ * @param {CommandIo} io - reads BRANCH_NAME, PR_TITLE, CLICKUP_API_KEY, SECRETS_WITHHELD,
+ * REVIEW_STATUS and MERGED_STATUS, plus what decideStatus reads; writes the outputs clickup_id,
+ * task_url and task_title
+ * @returns {Promise<boolean>} true when something came up short and a warning was raised
+ * @remarks keeping a ticket in step is bookkeeping, and bookkeeping must never stand between a pull
+ * request and its merge: this check is a required one in some repositories. so every problem, a
+ * dead api key, an outage, a refused status change, even a fault in the action itself, is raised
+ * as a warning annotation and reported through the return value. whether that fails anything is
+ * the caller's decision.
+ * @example
+ * const hadProblem = await runSync({ env: process.env, fetchImpl: fetch, setOutput, log: console.log });
+ */
+export async function runSync(io) {
+  let hadProblem = false;
+
+  /**
+   * passes a log line on, noting whether it is a warning.
+   *
+   * @param {string} line - line about to be printed
+   * @returns {void}
+   */
+  function log(line) {
+    hadProblem ||= line.startsWith('::warning::');
+    io.log(line);
+  }
+  const watched = { ...io, log };
+
+  try {
+    await syncPullRequest(watched);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'unknown error';
+    emit(watched, 'warning', `The ClickUp action hit an unexpected fault and did nothing further: ${reason}`);
+  }
+  return hadProblem;
 }
