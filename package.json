@@ -1,0 +1,14 @@
+{
+  "name": "clickup-pr-link-action",
+  "version": "1.1.0",
+  "description": "Links pull requests to ClickUp tasks and keeps the task status in step with the pull request",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
