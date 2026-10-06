@@ -21,4 +21,4 @@ function setOutput(name, value) {
   }
 }
 
-process.exitCode = await runSync({ env: process.env, fetchImpl: fetch, setOutput, log: console.log });
+await runSync({ env: process.env, fetchImpl: fetch, setOutput, log: console.log });

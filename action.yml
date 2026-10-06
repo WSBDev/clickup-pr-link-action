@@ -38,6 +38,9 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    # neither step may fail the job: keeping a ticket in step is bookkeeping, and this check is a
+    # required one in some repositories. every problem is raised as a "::warning::" annotation.
+
     # find the clickup task for this pr from its title and branch name, publish it for the link
     # step below, and bring its status in line with the pr. every value reaches the script through
     # env, never through the script text, so a branch name, pr title or task title cannot be read
@@ -57,13 +60,12 @@ runs:
         REVIEW_STATUS: ${{ inputs.review_status }}
         MERGED_STATUS: ${{ inputs.merged_status }}
         # github gives no secrets to runs for a pr from another repository or triggered by
-        # dependabot; there an empty api key is expected and must not turn the check red.
+        # dependabot; there an empty api key is expected and is not worth a warning.
         # head.repo.fork is not used: it is also true for same-repo prs in a repo that is a fork.
         SECRETS_WITHHELD: ${{ github.event.pull_request.head.repo.full_name != github.repository || github.actor == 'dependabot[bot]' }}
       run: node "$GITHUB_ACTION_PATH/src/main.mjs"
 
-    # add the task link to the pr description. "!cancelled()" lets this run when the step above
-    # found the task but then failed to change its status: the link is still wanted.
+    # add the task link to the pr description, whenever the step above found the task.
     - name: Update PR description
       if: ${{ !cancelled() && steps.sync.outputs.task_title != '' }}
       shell: bash
@@ -76,7 +78,10 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         # get current pr description
-        CURRENT_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body')
+        if ! CURRENT_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body'); then
+          echo "::warning::Could not add the ClickUp link: the pull request description could not be read"
+          exit 0
+        fi
 
         # check for a link to this task, with or without the workspace number in its path.
         # the bare id is not enough: a description ending in "CU-<id>" is not a link.
@@ -97,6 +102,9 @@ runs:
         } > "$BODY_FILE"
 
         # update pr description from file
-        gh pr edit "$PR_NUMBER" --body-file "$BODY_FILE"
+        if ! gh pr edit "$PR_NUMBER" --body-file "$BODY_FILE"; then
+          echo "::warning::Could not add the ClickUp link: the pull request description could not be edited"
+          exit 0
+        fi
 
         echo "Updated PR #$PR_NUMBER with ClickUp task link"
