@@ -9,7 +9,7 @@ Adds the ClickUp task link to a pull request description and keeps the task stat
 - Moves the task to **in review** when the pull request opens and to **complete** when it merges
 - Idempotent - won't duplicate links, and leaves a task alone when it already has the right status
 - A pull request with no task ID passes untouched
-- A status change that is due but cannot be made fails the check, so a dead API key is visible
+- Never fails the check unless asked to: a dead API key, an outage or a refused status change shows as a warning on the run
 
 ## Usage
 
@@ -47,7 +47,7 @@ The runner needs Node 20 or newer on its `PATH`. GitHub-hosted runners have it. 
 
 ### Upgrading from v1
 
-`v1` only added the link. `v2` also changes task statuses and can fail the check, so it is a separate tag and nothing changes for a repository until its workflow file is edited:
+`v1` only added the link. `v2` also changes task statuses, so it is a separate tag and nothing changes for a repository until its workflow file is edited:
 
 1. Change `@v1` to `@v2`.
 2. Add `closed` to the `types` list.
@@ -96,23 +96,27 @@ Status names are matched without regard to case. To use different names, or to s
           merged_status: ''   # empty string: merging changes nothing
 ```
 
-### What a failed check means
+### Warnings
 
-The check fails only when a status change was due and could not be made.
+By default the action never fails the check. Keeping a ticket in step is bookkeeping, and it must not stand between a pull request and its merge, even where this check is a required one. Every problem is raised as a warning on the workflow run, and the check stays green. That covers a runner without Node as well: the step reports it and passes.
 
-| Log line | Meaning | Fix |
-|----------|---------|-----|
+To have problems fail the job instead, set `fail_on_problem: 'true'`. Use that only where the check is not required for merging. This repository's own self-test workflow runs that way, so a broken release cannot pass its own check.
+
+| Warning | Meaning | Fix |
+|---------|---------|-----|
 | `Token invalid` (`OAUTH_025`) | The API key was revoked or regenerated | Put a current key in the `CLICKUP_API_KEY` secret |
 | `clickup_api_key is empty` | The secret is not available to this repository | Grant the repository access to the organization secret |
+| `None of these is a ClickUp task the API key can see` | No ID found is a task the key can see | Check the ID, or the account's access to the task |
+| `is linked, but its status could not be changed` | The link was added; the status change was refused or failed | Read the reason that follows |
 | `The task's list has no status named ...` | The task's list has no status with that name | Add the status to the list, or set `review_status` / `merged_status` |
 | `request got no answer` | Network failure or timeout after three attempts | Re-run the job |
 | `Could not confirm with GitHub that the pull request is still open` | GitHub could not be read, so "in review" was not applied on the word of the event alone | Re-run the job |
+| `Could not add the ClickUp link` | The pull request description could not be read or edited | Re-run the job |
+| `could not run on this runner` | The runner has no Node 20 or newer on its `PATH` | Use a GitHub-hosted runner, or install Node |
 
-These leave the check green:
+Because the check stays green, a dead API key does not announce itself. Look at the warnings on a run, or at a ticket that did not move, to spot one.
 
-- **No visible task.** None of the IDs found is a task the key can see. A warning is raised.
-- **Nothing owed.** On a push, a draft, or a pull request closed without merging, the same problems are warnings.
-- **No secrets by design.** GitHub gives no secrets to pull requests from other repositories or from Dependabot. The task is not looked up.
+GitHub gives no secrets to pull requests from other repositories or from Dependabot. On those runs the task is not looked up, and there is no warning.
 
 Calls to ClickUp and GitHub are retried twice on a rate limit, a server error or a network failure. After a rate limit the wait lasts until the limit resets, up to one minute.
 
@@ -157,6 +161,7 @@ The section is added once. It is skipped when the description already links to t
 | `branch_name` | Branch name to look for a ClickUp ID in | No | `${{ github.head_ref }}` |
 | `review_status` | Status set when a PR is opened, reopened or marked ready. Empty string turns it off | No | `in review` |
 | `merged_status` | Status set when a PR is merged. Empty string turns it off | No | `complete` |
+| `fail_on_problem` | `true` fails the job when anything comes up short. Off by default: problems are warnings | No | `false` |
 
 ## Outputs
 
@@ -189,7 +194,7 @@ The workflow requires the following permissions:
 ### Task status not updated
 - Check that the workflow lists `closed` in its `pull_request` types; without it a merge is never seen
 - A draft pull request moves its task only once it is marked ready for review
-- See [What a failed check means](#what-a-failed-check-means)
+- Look for a warning on the workflow run and see [Warnings](#warnings)
 
 ## Development
 
