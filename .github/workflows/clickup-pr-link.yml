@@ -2,7 +2,7 @@ name: ClickUp PR Link (self-test)
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, synchronize, closed]
+    types: [opened, reopened, ready_for_review, synchronize, closed, edited]
 
 jobs:
   add-clickup-link:

@@ -5,8 +5,10 @@ name: Add ClickUp Link to PR
 
 on:
   pull_request:
-    # "closed" is what lets a merged pr move its task to the merged status
-    types: [opened, reopened, ready_for_review, synchronize, closed]
+    # "closed" is what lets a merged pr move its task to the merged status.
+    # "edited" lets a task id added to the title after opening get its link at once, and keeps this
+    # file from needing a change if a later version of the action acts on edits
+    types: [opened, reopened, ready_for_review, synchronize, closed, edited]
 
 jobs:
   add-clickup-link:

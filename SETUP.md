@@ -89,7 +89,7 @@ name: Add ClickUp Link to PR
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, synchronize, closed]
+    types: [opened, reopened, ready_for_review, synchronize, closed, edited]
 
 jobs:
   add-clickup-link:
@@ -171,7 +171,7 @@ name: Add ClickUp Link to PR
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, synchronize, closed]
+    types: [opened, reopened, ready_for_review, synchronize, closed, edited]
 
 jobs:
   add-clickup-link:

@@ -22,7 +22,7 @@ name: Add ClickUp Link to PR
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, synchronize, closed]
+    types: [opened, reopened, ready_for_review, synchronize, closed, edited]
 
 jobs:
   add-clickup-link:
@@ -39,7 +39,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-The `closed` type is required: without it the workflow never runs when a pull request merges, and the task never reaches the merged status.
+The `closed` type is required: without it the workflow never runs when a pull request merges, and the task never reaches the merged status. The `edited` type makes the workflow run when a title is changed, so a task ID added later gets its link straight away.
 
 Keep the trigger as `pull_request`. Do not use `pull_request_target`: it hands secrets to pull requests from forks, and a fork's title would then choose which task gets moved.
 
@@ -50,7 +50,7 @@ The runner needs Node 20 or newer on its `PATH`. GitHub-hosted runners have it. 
 `v1` only added the link. `v2` also changes task statuses, so it is a separate tag and nothing changes for a repository until its workflow file is edited:
 
 1. Change `@v1` to `@v2`.
-2. Add `closed` to the `types` list.
+2. Add `closed` and `edited` to the `types` list.
 3. The `actions/checkout` step is no longer needed and can be removed.
 
 What else differs from `v1`:
@@ -84,7 +84,7 @@ Things to know:
 - Merging into any branch counts as merged, not only into the default branch.
 - A new pull request for a task that is already complete leaves it complete. Move the task back by hand if the work has reopened; the next pull request event then moves it forward again.
 - The order used is the list's own status order in ClickUp. If "in review" sits after "complete" in a list, the merge will not move the task.
-- The task ID has to be findable when the pull request is opened or marked ready. An ID added to the title later takes effect at the next of those events, or at merge. Re-running an old job does not see a title edited since.
+- The status changes only when the pull request is opened, reopened, marked ready or merged. A task ID added to the title later gets its link at once, and its status at the next of those events. Re-running an old job does not see a title edited since.
 
 Status names are matched without regard to case. To use different names, or to switch one change off, set the inputs:
 
