@@ -12,7 +12,7 @@ Complete step-by-step guide to deploy this action across your GitHub organizatio
 
 2. Assign appropriate permissions:
    - Add to relevant spaces/folders
-   - Grant **View** and **Read** permissions (minimum required)
+   - Grant **Edit** permission: the action changes task statuses, so read access is not enough
 
 3. Log in as the service account user
 
@@ -62,18 +62,18 @@ gh repo create YOUR_ORG/clickup-pr-link-action --public --source=. --remote=orig
 1. Navigate to the repository on GitHub
 2. Click **Releases** → **Create a new release**
 3. Configure the release:
-   - **Tag:** `v1.0.0`
-   - **Release title:** `v1.0.0 - Initial Release`
+   - **Tag:** `v2.0.0`
+   - **Release title:** `v2.0.0`
    - **Description:** "Initial release of ClickUp PR Link action"
 4. Click **Publish release**
 
-5. Create the `v1` tag to point to this release:
+5. Create the `v2` tag to point to this release:
    ```bash
-   git tag v1 v1.0.0
-   git push origin v1
+   git tag v2 v2.0.0
+   git push origin v2
    ```
 
-This allows repositories to use `@v1` and automatically get patch updates.
+This allows repositories to use `@v2` and automatically get patch updates.
 
 ## Phase 3: Deploy to Repositories
 
@@ -89,7 +89,7 @@ name: Add ClickUp Link to PR
 
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, ready_for_review, synchronize, closed]
 
 jobs:
   add-clickup-link:
@@ -100,7 +100,7 @@ jobs:
 
     steps:
       - name: Add ClickUp task link to PR
-        uses: YOUR_ORG/clickup-pr-link-action@v1
+        uses: YOUR_ORG/clickup-pr-link-action@v2
         with:
           clickup_api_key: ${{ secrets.CLICKUP_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -129,7 +129,7 @@ while read repo; do
 
   # create workflow directory and file
   mkdir -p .github/workflows
-  cp ../clickup-pr-link-action/.github/workflows/example.yml .github/workflows/clickup-pr-link.yml
+  cp ../clickup-pr-link-action/examples/clickup-pr-link.yml .github/workflows/clickup-pr-link.yml
 
   # update YOUR_ORG placeholder
   sed -i 's/YOUR_ORG/YOUR_ACTUAL_ORG_NAME/g' .github/workflows/clickup-pr-link.yml
@@ -171,7 +171,7 @@ name: Add ClickUp Link to PR
 
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, ready_for_review, synchronize, closed]
 
 jobs:
   add-clickup-link:
@@ -182,7 +182,7 @@ jobs:
 
     steps:
       - name: Add ClickUp task link to PR
-        uses: $ORG/clickup-pr-link-action@v1
+        uses: $ORG/clickup-pr-link-action@v2
         with:
           clickup_api_key: \${{ secrets.CLICKUP_API_KEY }}
           github_token: \${{ secrets.GITHUB_TOKEN }}
@@ -218,13 +218,17 @@ chmod +x deploy-to-all-repos.sh
 3. Make a change and push
 4. Create a pull request
 5. Verify the PR description includes the ClickUp link
+6. Verify the ClickUp task moved to **in review**
+7. Merge the pull request and verify the task moved to **complete**
 
 ### Expected Behavior
 
 When the action runs successfully:
-- ✓ Extracts ClickUp ID from branch name
+- ✓ Finds the ClickUp ID in the pull request title or branch name
 - ✓ Fetches task details from ClickUp API
 - ✓ Prepends task title and link to PR description
+- ✓ Moves the task to **in review** when the pull request opens (drafts wait until marked ready)
+- ✓ Moves the task to **complete** when the pull request merges
 
 ### Troubleshooting
 
@@ -233,6 +237,10 @@ If the action fails, check:
 2. ClickUp API key is correctly stored in organization secrets
 3. Service account has access to the ClickUp task
 4. Branch name contains a valid ClickUp task ID
+5. The workflow's `pull_request` types include `closed`; without it a merge never runs the workflow
+6. The task's list has statuses named **in review** and **complete**, or the workflow sets `review_status` and `merged_status` to the names that list uses
+
+A red check with `Token invalid` in the log means the API key was revoked or regenerated. Replace the `CLICKUP_API_KEY` organization secret.
 
 ## Phase 5: Maintenance
 
@@ -240,16 +248,16 @@ If the action fails, check:
 
 When making improvements:
 
-1. Make changes to `action.yml`
+1. Make the change with its tests and confirm `npm test` passes
 2. Commit and push changes
-3. Create a new release (e.g., `v1.1.0`)
-4. Update the `v1` tag:
+3. Create a new release (e.g., `v2.1.0`)
+4. Update the `v2` tag:
    ```bash
-   git tag -f v1 v1.1.0
-   git push origin v1 --force
+   git tag -f v2 v2.1.0
+   git push origin v2 --force
    ```
 
-All repositories using `@v1` will automatically use the updated version.
+All repositories using `@v2` will automatically use the updated version.
 
 ### Monitoring
 

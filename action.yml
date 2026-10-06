@@ -1,5 +1,5 @@
 name: 'ClickUp PR Link'
-description: 'Automatically add ClickUp task link and title to PR description'
+description: 'Add the ClickUp task link to a PR description and keep the task status in step with the PR'
 author: 'Lex Dyer'
 
 branding:
@@ -8,124 +8,95 @@ branding:
 
 inputs:
   clickup_api_key:
-    description: 'ClickUp API key for fetching task details'
+    description: 'ClickUp API key for reading the task and setting its status'
     required: true
   github_token:
-    description: 'GitHub token for updating PR description'
+    description: 'GitHub token for reading the PR state and updating the PR description'
     required: true
     default: ${{ github.token }}
   branch_name:
-    description: 'Branch name to extract ClickUp ID from'
+    description: 'Branch name to look for a ClickUp ID in'
     required: false
     default: ${{ github.head_ref }}
+  review_status:
+    description: 'Task status to set when a PR is opened, reopened or marked ready for review. Empty string turns this off.'
+    required: false
+    default: 'in review'
+  merged_status:
+    description: 'Task status to set when a PR is merged. Empty string turns this off.'
+    required: false
+    default: 'complete'
 
 outputs:
   clickup_id:
-    description: 'Extracted ClickUp task ID'
-    value: ${{ steps.extract.outputs.clickup_id }}
+    description: 'ClickUp task ID the PR was matched to; empty when there is none'
+    value: ${{ steps.sync.outputs.clickup_id }}
   task_url:
     description: 'Full URL to the ClickUp task'
-    value: ${{ steps.extract.outputs.task_url }}
+    value: ${{ steps.sync.outputs.task_url }}
 
 runs:
   using: 'composite'
   steps:
-    # extract clickup id from branch name
-    - name: Extract ClickUp ID from branch name
-      id: extract
+    # find the clickup task for this pr from its title and branch name, publish it for the link
+    # step below, and bring its status in line with the pr. every value reaches the script through
+    # env, never through the script text, so a branch name, pr title or task title cannot be read
+    # as shell code.
+    - name: Sync ClickUp task
+      id: sync
       shell: bash
-      run: |
-        BRANCH="${{ inputs.branch_name }}"
-        echo "Branch name: $BRANCH"
+      env:
+        BRANCH_NAME: ${{ inputs.branch_name }}
+        PR_TITLE: ${{ github.event.pull_request.title }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_MERGED: ${{ github.event.pull_request.merged }}
+        PR_DRAFT: ${{ github.event.pull_request.draft }}
+        EVENT_ACTION: ${{ github.event.action }}
+        CLICKUP_API_KEY: ${{ inputs.clickup_api_key }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        REVIEW_STATUS: ${{ inputs.review_status }}
+        MERGED_STATUS: ${{ inputs.merged_status }}
+        # github gives no secrets to runs for a pr from another repository or triggered by
+        # dependabot; there an empty api key is expected and must not turn the check red.
+        # head.repo.fork is not used: it is also true for same-repo prs in a repo that is a fork.
+        SECRETS_WITHHELD: ${{ github.event.pull_request.head.repo.full_name != github.repository || github.actor == 'dependabot[bot]' }}
+      run: node "$GITHUB_ACTION_PATH/src/main.mjs"
 
-        # clickup task ids are typically 8-9 character alphanumeric strings
-        # extract using regex pattern that matches clickup id format
-        CLICKUP_ID=$(echo "$BRANCH" | grep -oE '[a-z0-9]{8,9}' | head -n 1)
-
-        if [ -z "$CLICKUP_ID" ]; then
-          echo "⚠️ No ClickUp ID found in branch name: $BRANCH"
-          echo "clickup_id=" >> $GITHUB_OUTPUT
-          echo "task_url=" >> $GITHUB_OUTPUT
-          exit 0
-        fi
-
-        echo "✓ Found ClickUp ID: $CLICKUP_ID"
-        echo "clickup_id=$CLICKUP_ID" >> $GITHUB_OUTPUT
-        echo "task_url=https://app.clickup.com/t/$CLICKUP_ID" >> $GITHUB_OUTPUT
-
-    # fetch task details from clickup api
-    - name: Fetch ClickUp task details
-      id: fetch
-      if: steps.extract.outputs.clickup_id != ''
-      shell: bash
-      run: |
-        CLICKUP_ID="${{ steps.extract.outputs.clickup_id }}"
-
-        # call clickup api to get task details
-        RESPONSE=$(curl -s -X GET \
-          "https://api.clickup.com/api/v2/task/$CLICKUP_ID" \
-          -H "Authorization: ${{ inputs.clickup_api_key }}" \
-          -H "Content-Type: application/json")
-
-        # check if request was successful
-        if echo "$RESPONSE" | grep -q '"err"'; then
-          echo "⚠️ Failed to fetch task details from ClickUp"
-          echo "$RESPONSE"
-          echo "task_title=" >> $GITHUB_OUTPUT
-          exit 0
-        fi
-
-        # extract task title using jq or python
-        if command -v jq &> /dev/null; then
-          TASK_TITLE=$(echo "$RESPONSE" | jq -r '.name // empty')
-          TASK_STATUS=$(echo "$RESPONSE" | jq -r '.status.status // empty')
-        else
-          # fallback to python if jq not available
-          TASK_TITLE=$(echo "$RESPONSE" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('name', ''))")
-          TASK_STATUS=$(echo "$RESPONSE" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('status', {}).get('status', ''))")
-        fi
-
-        if [ -z "$TASK_TITLE" ]; then
-          echo "⚠️ Could not extract task title from response"
-          echo "task_title=" >> $GITHUB_OUTPUT
-          exit 0
-        fi
-
-        echo "✓ Task: $TASK_TITLE"
-        echo "task_title=$TASK_TITLE" >> $GITHUB_OUTPUT
-        echo "task_status=$TASK_STATUS" >> $GITHUB_OUTPUT
-
-    # update pr description with clickup link
+    # add the task link to the pr description. "!cancelled()" lets this run when the step above
+    # found the task but then failed to change its status: the link is still wanted.
     - name: Update PR description
-      if: steps.extract.outputs.clickup_id != '' && steps.fetch.outputs.task_title != ''
+      if: ${{ !cancelled() && steps.sync.outputs.task_title != '' }}
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
+        GH_REPO: ${{ github.repository }}
+        CLICKUP_ID: ${{ steps.sync.outputs.clickup_id }}
+        TASK_URL: ${{ steps.sync.outputs.task_url }}
+        TASK_TITLE: ${{ steps.sync.outputs.task_title }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
-        CLICKUP_ID="${{ steps.extract.outputs.clickup_id }}"
-        TASK_URL="${{ steps.extract.outputs.task_url }}"
-        TASK_TITLE="${{ steps.fetch.outputs.task_title }}"
-        PR_NUMBER="${{ github.event.pull_request.number }}"
-        REPO="${{ github.repository }}"
-
         # get current pr description
         CURRENT_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body')
 
-        # check if clickup link already exists in description
-        if echo "$CURRENT_BODY" | grep -q "$CLICKUP_ID"; then
-          echo "ℹ️ ClickUp link already exists in PR description"
+        # check for a link to this task, with or without the workspace number in its path.
+        # the bare id is not enough: a description ending in "CU-<id>" is not a link.
+        # the body is fed in as a here-string, not piped from echo: under pipefail, grep -q
+        # leaving at the first match can kill echo on a long body and make a match read as none.
+        if grep -qE "app\.clickup\.com/t/([0-9]+/)?$CLICKUP_ID" <<<"$CURRENT_BODY"; then
+          echo "ClickUp link already exists in PR description"
           exit 0
         fi
 
-        # create clickup section to prepend
+        # create clickup section to prepend, in a file of this job's own
+        BODY_FILE=$(mktemp)
         {
-          printf "## 🎯 ClickUp Task\n\n"
+          printf "## ClickUp Task\n\n"
           printf "**[%s](%s)**\n\n" "$TASK_TITLE" "$TASK_URL"
           printf -- "---\n\n"
           printf "%s" "$CURRENT_BODY"
-        } > /tmp/pr_body.md
+        } > "$BODY_FILE"
 
         # update pr description from file
-        gh pr edit "$PR_NUMBER" --body-file /tmp/pr_body.md
+        gh pr edit "$PR_NUMBER" --body-file "$BODY_FILE"
 
-        echo "✓ Updated PR #$PR_NUMBER with ClickUp task link"
+        echo "Updated PR #$PR_NUMBER with ClickUp task link"
