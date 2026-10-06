@@ -74,15 +74,20 @@ const resolved = { clickup_id: TASK_ID, task_url: `https://app.clickup.com/t/${T
 const unresolved = { clickup_id: '', task_url: '', task_title: '' };
 const notFound = errorReply(404, 'ITEM_013', 'Task not found');
 const deadKey = errorReply(401, 'OAUTH_025', 'Token invalid');
+const refusedStatus = errorReply(400, 'CRTSK_001', 'Status does not exist');
 const open = pullRequestReply();
 const merged = pullRequestReply({ state: 'closed', merged: true });
 const githubDown = { status: 500, body: 'Server error' };
+const outage = [networkFailure(), networkFailure(), networkFailure()];
 
 /** api replies for an open pull request whose task goes from in progress to in review */
 const toReview = [taskReply('in progress'), open, listReply(), taskReply('in progress'), taskReply('in review')];
 
 /** api replies for a merge event whose task goes from in review to complete; github is not asked */
 const toComplete = [taskReply('in review'), listReply(), taskReply('in review'), taskReply('complete')];
+
+/** api replies up to a status write that clickup then refuses */
+const toRefusal = [taskReply('in progress'), open, listReply(), taskReply('in progress'), refusedStatus];
 
 /**
  * picks the warning annotation out of captured log lines.
@@ -108,8 +113,9 @@ function lastWrite(requests) {
 test('an opened pull request moves its task to review and publishes the task for the link step', async () => {
   const { io, outputs, lines, requests } = harness(openedEnv, toReview);
 
-  await runSync(io);
+  const hadProblem = await runSync(io);
 
+  assert.equal(hadProblem, false);
   assert.deepEqual(outputs, resolved);
   assert.deepEqual(
     requests.map((request) => `${request.method} ${request.url}`),
@@ -193,12 +199,11 @@ test('a push publishes the task for the link step but never touches the status o
   assert.equal(requests.length, 1);
 });
 
-test('a pull request that names no task is left alone without any lookup', async () => {
+test('a pull request that names no task is left alone without any lookup, and is no problem', async () => {
   const env = { ...openedEnv, BRANCH_NAME: 'staging', PR_TITLE: 'Prod deployment' };
   const { io, outputs, requests } = harness(env);
 
-  await runSync(io);
-
+  assert.equal(await runSync(io), false);
   assert.deepEqual(outputs, unresolved);
   assert.equal(requests.length, 0);
 });
@@ -223,41 +228,19 @@ test('the branch task is used even when the title mentions another task', async 
   assert.equal(requests.some((request) => request.url.includes('other001a')), false);
 });
 
-test('when clickup knows none of the ids the run warns, without asking github', async () => {
-  const { io, outputs, lines, requests } = harness(openedEnv, [notFound]);
-
-  await runSync(io);
-
-  assert.deepEqual(outputs, unresolved);
-  assert.equal(requests.length, 1);
-  assert.match(warningLine(lines), new RegExp(TASK_ID));
-});
-
-test('a dead api key is a warning that says what to check', async () => {
-  const { io, outputs, lines } = harness(openedEnv, [deadKey]);
-
-  await runSync(io);
-
-  assert.deepEqual(outputs, unresolved);
-  assert.match(warningLine(lines), /Token invalid/);
-  assert.match(warningLine(lines), /CLICKUP_API_KEY/);
-});
-
-test('a missing api key is a warning', async () => {
-  const { io, lines, requests } = harness({ ...openedEnv, CLICKUP_API_KEY: '' });
-
-  await runSync(io);
-
-  assert.equal(requests.length, 0);
-  assert.match(warningLine(lines), /clickup_api_key is empty/);
-});
-
-test('a missing api key is not even a warning when the run is denied secrets by design', async () => {
+test('a missing api key is no problem at all when the run is denied secrets by design', async () => {
   const { io, lines, requests } = harness({ ...openedEnv, CLICKUP_API_KEY: '', SECRETS_WITHHELD: 'true' });
 
-  await runSync(io);
-
+  assert.equal(await runSync(io), false);
   assert.equal(requests.length, 0);
+  assert.equal(warningLine(lines), '');
+});
+
+test('github being unreadable is no problem for an event that asks for nothing', async () => {
+  const env = { ...openedEnv, PR_DRAFT: 'true' };
+  const { io, lines } = harness(env, [taskReply('in progress'), githubDown, githubDown, githubDown]);
+
+  assert.equal(await runSync(io), false);
   assert.equal(warningLine(lines), '');
 });
 
@@ -269,104 +252,72 @@ test('an api key saved with stray whitespace around it is used without the white
   assert.equal(requests[0].headers.Authorization, API_KEY);
 });
 
-test('a refused status change is a warning, and the task is still published for the link step', async () => {
-  const { io, outputs, lines } = harness(openedEnv, [
-    taskReply('in progress'),
-    open,
-    listReply(),
-    taskReply('in progress'),
-    errorReply(400, 'CRTSK_001', 'Status does not exist'),
-  ]);
-
-  await runSync(io);
-
-  assert.deepEqual(outputs, resolved);
-  assert.match(warningLine(lines), /Status does not exist/);
-});
-
-test('a status the list does not have is a warning that names the status, without a write', async () => {
-  const env = { ...openedEnv, REVIEW_STATUS: 'qa' };
-  const { io, lines, requests } = harness(env, [taskReply('in progress'), open, listReply()]);
-
-  await runSync(io);
-
-  assert.equal(requests.length, 3);
-  assert.match(warningLine(lines), /no status named "qa"/);
-});
-
-test('a network failure is reported as one, without pointing at the api key', async () => {
-  const { io, lines } = harness(openedEnv, [networkFailure(), networkFailure(), networkFailure()]);
-
-  await runSync(io);
-
-  assert.match(warningLine(lines), /ENOTFOUND/);
-  assert.doesNotMatch(warningLine(lines), /CLICKUP_API_KEY/);
-});
-
-test('when github cannot confirm the pull request is still open, the status is not touched and the run warns', async () => {
-  const { io, outputs, lines, requests } = harness(openedEnv, [
-    taskReply('in progress'),
-    githubDown,
-    githubDown,
-    githubDown,
-  ]);
-
-  await runSync(io);
-
-  assert.deepEqual(outputs, resolved);
-  assert.equal(requests.length, 4);
-  assert.match(warningLine(lines), /GitHub/);
-});
-
-test('when github cannot be read for an event that asks for nothing, there is no warning', async () => {
-  const env = { ...openedEnv, PR_DRAFT: 'true' };
-  const { io, lines } = harness(env, [taskReply('in progress'), githubDown, githubDown, githubDown]);
-
-  await runSync(io);
-
-  assert.equal(warningLine(lines), '');
-});
-
-test('without a github token an open pull request cannot be confirmed either', async () => {
-  const { io, lines, requests } = harness({ ...openedEnv, GITHUB_TOKEN: '' }, [taskReply('in progress')]);
-
-  await runSync(io);
-
-  assert.equal(requests.length, 1);
-  assert.match(warningLine(lines), /GitHub/);
-});
-
-/** @type {Array<[string, Record<string, string>, import('../test-support/fake-fetch.mjs').CannedOutcome[]]>} */
-const problemCases = [
-  ['a dead api key', openedEnv, [deadKey]],
-  ['a dead api key at merge', mergedEnv, [deadKey]],
-  ['a missing api key', { ...openedEnv, CLICKUP_API_KEY: '' }, []],
-  ['a clickup outage', openedEnv, [networkFailure(), networkFailure(), networkFailure()]],
-  ['a refused status change', openedEnv, [taskReply('in progress'), open, listReply(), taskReply('in progress'), errorReply(400, 'CRTSK_001', 'Status does not exist')]],
-  ['a status the list lacks', { ...openedEnv, REVIEW_STATUS: 'qa' }, [taskReply('in progress'), open, listReply()]],
-  ['github being unreadable', openedEnv, [taskReply('in progress'), githubDown, githubDown, githubDown]],
+/**
+ * every way the action can come up short: the run reports a problem, as a warning that matches the
+ * first pattern (and not the second, when there is one), and never as an error or a rejection.
+ *
+ * @type {Array<[string, Record<string, string>, import('../test-support/fake-fetch.mjs').CannedOutcome[], RegExp, RegExp?]>}
+ */
+const problems = [
+  ['clickup knowing none of the ids', openedEnv, [notFound], new RegExp(TASK_ID)],
+  ['a dead api key', openedEnv, [deadKey], /Token invalid.*CLICKUP_API_KEY/],
+  ['a dead api key at merge', mergedEnv, [deadKey], /Token invalid/],
+  ['a missing api key', { ...openedEnv, CLICKUP_API_KEY: '' }, [], /clickup_api_key is empty/],
+  ['a clickup outage', openedEnv, outage, /ENOTFOUND/, /CLICKUP_API_KEY/],
+  ['a refused status change', openedEnv, toRefusal, /is linked, but its status could not be changed.*Status does not exist/],
+  ['a status the list does not have', { ...openedEnv, REVIEW_STATUS: 'qa' }, [taskReply('in progress'), open, listReply()], /no status named "qa"/],
+  ['github being unable to confirm the pull request is open', openedEnv, [taskReply('in progress'), githubDown, githubDown, githubDown], /GitHub/],
+  ['a missing github token', { ...openedEnv, GITHUB_TOKEN: '' }, [taskReply('in progress')], /GitHub/],
 ];
 
-for (const [name, env, outcomes] of problemCases) {
-  test(`${name} never blocks the pull request: no error annotation, and the command does not throw`, async () => {
+for (const [name, env, outcomes, expected, unexpected] of problems) {
+  test(`${name} is a warning and never blocks the pull request`, async () => {
     const { io, lines } = harness(env, outcomes);
 
-    await assert.doesNotReject(() => runSync(io));
+    assert.equal(await runSync(io), true);
 
+    assert.match(warningLine(lines), expected);
+    if (unexpected) {
+      assert.doesNotMatch(warningLine(lines), unexpected);
+    }
     assert.equal(lines.some((line) => line.startsWith('::error::')), false);
-    assert.notEqual(warningLine(lines), '');
   });
 }
 
-test('a fault inside the action itself is a warning too, not a failed check', async () => {
+test('a fault inside the action itself is a warning too, not a rejection', async () => {
   const { io, lines } = harness(pushedEnv, [taskReply('in progress')]);
   io.setOutput = () => {
     throw new Error('disk full');
   };
 
-  await assert.doesNotReject(() => runSync(io));
-
+  assert.equal(await runSync(io), true);
   assert.match(warningLine(lines), /disk full/);
+});
+
+test('a refused status change still publishes the task, so the link is added', async () => {
+  const { io, outputs } = harness(openedEnv, toRefusal);
+
+  await runSync(io);
+
+  assert.deepEqual(outputs, resolved);
+});
+
+test('a task that cannot be found publishes nothing and stops before github is asked', async () => {
+  const { io, outputs, requests } = harness(openedEnv, [notFound]);
+
+  await runSync(io);
+
+  assert.deepEqual(outputs, unresolved);
+  assert.equal(requests.length, 1);
+});
+
+test('a status the list does not have is never written', async () => {
+  const env = { ...openedEnv, REVIEW_STATUS: 'qa' };
+  const { io, requests } = harness(env, [taskReply('in progress'), open, listReply()]);
+
+  await runSync(io);
+
+  assert.equal(lastWrite(requests), null);
 });
 
 test('a status name with a percent sign is logged as written', async () => {
